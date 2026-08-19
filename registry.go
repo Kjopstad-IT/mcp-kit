@@ -22,10 +22,12 @@ type Tool struct {
 // Renderer defines the surface renderers for a typed output. Text is the
 // human-readable CLI projection. JSON CLI output and MCP structured content
 // are always derived from the typed value. MCPText optionally supplies an
-// exact MCP text block for products that have a text-content wire contract.
+// exact text block. MCPContent supplies image, audio, resource-link, or mixed
+// MCP blocks. Set at most one MCP renderer.
 type Renderer[Out any] struct {
-	Text    func(Out) (string, error)
-	MCPText func(Out) (string, error)
+	Text       func(Out) (string, error)
+	MCPText    func(Out) (string, error)
+	MCPContent func(Out) ([]mcp.Content, error)
 }
 
 // Registry owns a generation of tool definitions.
@@ -66,7 +68,14 @@ func Register[In, Out any](
 	if renderer.Text == nil {
 		return fmt.Errorf("mcp-kit: tool %q has no text renderer", spec.Name)
 	}
+	if renderer.MCPText != nil && renderer.MCPContent != nil {
+		return fmt.Errorf("mcp-kit: tool %q has more than one MCP renderer", spec.Name)
+	}
 	parser, err := buildCLIParser[In]()
+	if err != nil {
+		return fmt.Errorf("mcp-kit: tool %q: %w", spec.Name, err)
+	}
+	inputSchema, err := inputSchemaFor[In]()
 	if err != nil {
 		return fmt.Errorf("mcp-kit: tool %q: %w", spec.Name, err)
 	}
@@ -92,18 +101,39 @@ func Register[In, Out any](
 			Title:       spec.Title,
 			Description: spec.Description,
 			Annotations: spec.Annotations,
-		}, func(ctx context.Context, _ *mcp.CallToolRequest, input In) (*mcp.CallToolResult, Out, error) {
-			output, err := handler(ctx, input)
-			if err != nil || renderer.MCPText == nil {
-				return nil, output, err
+			InputSchema: inputSchema,
+		}, func(ctx context.Context, request *mcp.CallToolRequest, input In) (*mcp.CallToolResult, Out, error) {
+			if token := request.Params.GetProgressToken(); token != nil {
+				ctx = withProgressReporter(ctx, func(ctx context.Context, progress Progress) error {
+					return request.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+						ProgressToken: token,
+						Message:       progress.Message,
+						Progress:      progress.Current,
+						Total:         progress.Total,
+					})
+				})
 			}
-			text, err := renderer.MCPText(output)
+			output, err := handler(ctx, input)
 			if err != nil {
 				return nil, output, err
 			}
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: text}},
-			}, output, nil
+			if renderer.MCPContent != nil {
+				content, renderErr := renderer.MCPContent(output)
+				if renderErr != nil {
+					return nil, output, renderErr
+				}
+				return &mcp.CallToolResult{Content: content}, output, nil
+			}
+			if renderer.MCPText != nil {
+				text, renderErr := renderer.MCPText(output)
+				if renderErr != nil {
+					return nil, output, renderErr
+				}
+				return &mcp.CallToolResult{
+					Content: []mcp.Content{&mcp.TextContent{Text: text}},
+				}, output, nil
+			}
+			return nil, output, nil
 		})
 	}
 
