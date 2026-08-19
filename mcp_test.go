@@ -272,6 +272,13 @@ func TestServerProjectsComposedMCPOnlyInputSchema(t *testing.T) {
 		},
 	}}
 	r := kit.NewRegistry()
+	var middlewareSchema *jsonschema.Schema
+	if err := r.Use(func(spec kit.Tool, next kit.Handler) kit.Handler {
+		middlewareSchema = spec.MCPInputSchema
+		return next
+	}); err != nil {
+		t.Fatal(err)
+	}
 	err := kit.Register(r, kit.Tool{
 		Name: "composed", MCPOnly: true, MCPInputSchema: custom,
 	}, func(_ context.Context, input map[string]any) (greetOut, error) {
@@ -283,9 +290,13 @@ func TestServerProjectsComposedMCPOnlyInputSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Registration owns a clone. Later caller mutation must not change the wire
-	// contract mounted on a server.
+	if middlewareSchema == nil {
+		t.Fatal("middleware did not receive the custom input schema")
+	}
+	// Registration owns the wire schema. Later caller or middleware mutation
+	// must not change the contract mounted on a server.
 	custom.OneOf = nil
+	middlewareSchema.OneOf = nil
 
 	ctx := context.Background()
 	server, err := kit.NewServer(r, &mcp.Implementation{Name: "test", Version: "0.1.0"}, nil)

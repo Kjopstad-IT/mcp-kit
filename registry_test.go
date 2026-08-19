@@ -329,6 +329,27 @@ func TestRegisterRejectsInvalidHeaderInCustomInputSchema(t *testing.T) {
 	}
 }
 
+func TestRegisterRejectsInvalidHeaderInComposedCustomInputSchema(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{
+		Name: "invalid", MCPOnly: true,
+		MCPInputSchema: &jsonschema.Schema{
+			Type: "object",
+			OneOf: []*jsonschema.Schema{{
+				Type: "object",
+				Properties: map[string]*jsonschema.Schema{
+					"token": {Type: "array", Extra: map[string]any{"x-mcp-header": "Authorization"}},
+				},
+			}},
+		},
+	}, func(context.Context, map[string]any) (greetOut, error) {
+		return greetOut{}, nil
+	}, kit.Renderer[greetOut]{})
+	if err == nil || !strings.Contains(err.Error(), "x-mcp-header") {
+		t.Fatalf("Register error = %v, want composed-header rejection", err)
+	}
+}
+
 func TestRegisterRejectsByteSliceCLIField(t *testing.T) {
 	r := kit.NewRegistry()
 	err := kit.Register(r, kit.Tool{Name: "bytes"},

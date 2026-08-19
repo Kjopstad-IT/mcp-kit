@@ -133,7 +133,11 @@ func Register[In, Out any](
 			return fmt.Errorf("mcp-kit: tool %q custom input schema: %w", spec.Name, schemaErr)
 		}
 		inputSchema = cloned
-		spec.MCPInputSchema = inputSchema
+		middlewareSchema, schemaErr := cloneAndValidateInputSchema(inputSchema)
+		if schemaErr != nil {
+			return fmt.Errorf("mcp-kit: tool %q custom input schema: %w", spec.Name, schemaErr)
+		}
+		spec.MCPInputSchema = middlewareSchema
 	} else {
 		inferred, schemaErr := inputSchemaFor[In]()
 		if schemaErr != nil {

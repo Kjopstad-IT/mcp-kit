@@ -23,7 +23,7 @@ func cloneAndValidateInputSchema(source *jsonschema.Schema) (*jsonschema.Schema,
 	if clone.Type != "object" {
 		return nil, fmt.Errorf(`root must have type "object"`)
 	}
-	if err := validateCustomMCPHeaders(clone.Properties, "", make(map[string]string)); err != nil {
+	if err := validateCustomMCPHeaders(&clone, "$", make(map[string]string)); err != nil {
 		return nil, err
 	}
 	if _, err := clone.Resolve(nil); err != nil {
@@ -32,39 +32,89 @@ func cloneAndValidateInputSchema(source *jsonschema.Schema) (*jsonschema.Schema,
 	return &clone, nil
 }
 
-func validateCustomMCPHeaders(properties map[string]*jsonschema.Schema, parent string, seen map[string]string) error {
-	names := make([]string, 0, len(properties))
-	for name := range properties {
-		names = append(names, name)
+func validateCustomMCPHeaders(schema *jsonschema.Schema, path string, seen map[string]string) error {
+	if schema == nil {
+		return nil
 	}
-	sort.Strings(names)
-	for _, name := range names {
-		property := properties[name]
-		if property == nil {
-			continue
+	if raw, exists := schema.Extra["x-mcp-header"]; exists {
+		header, ok := raw.(string)
+		if !ok || header == "" {
+			return fmt.Errorf("schema %s: x-mcp-header must be a non-empty string", path)
 		}
-		path := name
-		if parent != "" {
-			path = parent + "." + name
+		if schema.Type != "string" && schema.Type != "integer" && schema.Type != "boolean" {
+			return fmt.Errorf("schema %s: x-mcp-header requires a string, integer, or boolean", path)
 		}
-		if raw, exists := property.Extra["x-mcp-header"]; exists {
-			header, ok := raw.(string)
-			if !ok || header == "" {
-				return fmt.Errorf("property %s: x-mcp-header must be a non-empty string", path)
-			}
-			if property.Type != "string" && property.Type != "integer" && property.Type != "boolean" {
-				return fmt.Errorf("property %s: x-mcp-header requires a string, integer, or boolean", path)
-			}
-			if !validHeaderName(header) {
-				return fmt.Errorf("property %s: invalid x-mcp-header %q", path, header)
-			}
-			folded := strings.ToLower(header)
-			if prior, duplicate := seen[folded]; duplicate {
-				return fmt.Errorf("properties %s and %s: duplicate x-mcp-header %q", prior, path, header)
-			}
-			seen[folded] = path
+		if !validHeaderName(header) {
+			return fmt.Errorf("schema %s: invalid x-mcp-header %q", path, header)
 		}
-		if err := validateCustomMCPHeaders(property.Properties, path, seen); err != nil {
+		folded := strings.ToLower(header)
+		if prior, duplicate := seen[folded]; duplicate {
+			return fmt.Errorf("schemas %s and %s: duplicate x-mcp-header %q", prior, path, header)
+		}
+		seen[folded] = path
+	}
+
+	maps := []struct {
+		keyword string
+		values  map[string]*jsonschema.Schema
+	}{
+		{"$defs", schema.Defs},
+		{"definitions", schema.Definitions},
+		{"dependencies", schema.DependencySchemas},
+		{"properties", schema.Properties},
+		{"patternProperties", schema.PatternProperties},
+		{"dependentSchemas", schema.DependentSchemas},
+	}
+	for _, group := range maps {
+		names := make([]string, 0, len(group.values))
+		for name := range group.values {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if err := validateCustomMCPHeaders(group.values[name], path+"."+group.keyword+"."+name, seen); err != nil {
+				return err
+			}
+		}
+	}
+
+	slices := []struct {
+		keyword string
+		values  []*jsonschema.Schema
+	}{
+		{"prefixItems", schema.PrefixItems},
+		{"items", schema.ItemsArray},
+		{"allOf", schema.AllOf},
+		{"anyOf", schema.AnyOf},
+		{"oneOf", schema.OneOf},
+	}
+	for _, group := range slices {
+		for index, child := range group.values {
+			if err := validateCustomMCPHeaders(child, fmt.Sprintf("%s.%s[%d]", path, group.keyword, index), seen); err != nil {
+				return err
+			}
+		}
+	}
+
+	children := []struct {
+		keyword string
+		value   *jsonschema.Schema
+	}{
+		{"items", schema.Items},
+		{"additionalItems", schema.AdditionalItems},
+		{"contains", schema.Contains},
+		{"unevaluatedItems", schema.UnevaluatedItems},
+		{"additionalProperties", schema.AdditionalProperties},
+		{"propertyNames", schema.PropertyNames},
+		{"unevaluatedProperties", schema.UnevaluatedProperties},
+		{"not", schema.Not},
+		{"if", schema.If},
+		{"then", schema.Then},
+		{"else", schema.Else},
+		{"contentSchema", schema.ContentSchema},
+	}
+	for _, child := range children {
+		if err := validateCustomMCPHeaders(child.value, path+"."+child.keyword, seen); err != nil {
 			return err
 		}
 	}
