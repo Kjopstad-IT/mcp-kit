@@ -60,10 +60,17 @@ func Register[In, Out any](
 	if handler == nil {
 		return fmt.Errorf("mcp-kit: tool %q has nil handler", spec.Name)
 	}
+	if renderer.Text == nil {
+		return fmt.Errorf("mcp-kit: tool %q has no text renderer", spec.Name)
+	}
+	parser, err := buildCLIParser[In]()
+	if err != nil {
+		return fmt.Errorf("mcp-kit: tool %q: %w", spec.Name, err)
+	}
 
 	entry := &registeredTool{spec: spec}
 	entry.invoke = func(ctx context.Context, args []string) (any, error) {
-		input, err := parseInput[In](args)
+		input, err := parser.parse(args)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", spec.Name, err)
 		}
@@ -73,9 +80,6 @@ func Register[In, Out any](
 		output, ok := value.(Out)
 		if !ok {
 			return "", fmt.Errorf("mcp-kit: tool %q returned %T", spec.Name, value)
-		}
-		if renderer.Text == nil {
-			return "", fmt.Errorf("mcp-kit: tool %q has no text renderer", spec.Name)
 		}
 		return renderer.Text(output)
 	}

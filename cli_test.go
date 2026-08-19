@@ -40,3 +40,14 @@ func TestRunRequiresPositionalInput(t *testing.T) {
 		t.Fatalf("Run error = %v, want missing name", err)
 	}
 }
+
+func TestRunHonorsEndOfOptions(t *testing.T) {
+	r := newRegistry(t)
+	var stdout, stderr testWriter
+	if err := kit.Run(context.Background(), r, []string{"greet", "--", "--json"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "Hello, --json\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}

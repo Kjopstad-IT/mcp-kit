@@ -23,8 +23,14 @@ func Run(ctx context.Context, registry *Registry, args []string, stdout, _ io.Wr
 
 	jsonOutput := false
 	toolArgs := make([]string, 0, len(args)-1)
+	parseGlobalOptions := true
 	for _, arg := range args[1:] {
-		if arg == "--json" {
+		if parseGlobalOptions && arg == "--" {
+			parseGlobalOptions = false
+			toolArgs = append(toolArgs, arg)
+			continue
+		}
+		if parseGlobalOptions && arg == "--json" {
 			jsonOutput = true
 			continue
 		}
@@ -45,55 +51,104 @@ func Run(ctx context.Context, registry *Registry, args []string, stdout, _ io.Wr
 	return err
 }
 
-func parseInput[In any](args []string) (In, error) {
-	var input In
-	value := reflect.ValueOf(&input).Elem()
-	if value.Kind() != reflect.Struct {
-		return input, fmt.Errorf("CLI input must be a struct, got %s", value.Kind())
-	}
-	typeOfInput := value.Type()
+type cliField struct {
+	path []int
+	name string
+}
 
-	var positionals []int
-	flags := make(map[string]int)
-	fieldNames := make(map[int]string)
-	for i := 0; i < value.NumField(); i++ {
-		field := typeOfInput.Field(i)
+type cliParser[In any] struct {
+	positionals []cliField
+	flags       map[string]cliField
+}
+
+func buildCLIParser[In any]() (*cliParser[In], error) {
+	typeOfInput := reflect.TypeOf((*In)(nil)).Elem()
+	if typeOfInput.Kind() != reflect.Struct {
+		return nil, fmt.Errorf("CLI input must be a struct, got %s", typeOfInput.Kind())
+	}
+	parser := &cliParser[In]{flags: make(map[string]cliField)}
+	if err := parser.addFields(typeOfInput, nil); err != nil {
+		return nil, err
+	}
+	return parser, nil
+}
+
+func (parser *cliParser[In]) addFields(inputType reflect.Type, parentPath []int) error {
+	for i := 0; i < inputType.NumField(); i++ {
+		field := inputType.Field(i)
 		if !field.IsExported() {
 			continue
 		}
+		path := append(append([]int(nil), parentPath...), i)
 		jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
+		if jsonName == "-" || field.Tag.Get("cli") == "-" {
+			continue
+		}
+		embeddedType := field.Type
+		if embeddedType.Kind() == reflect.Pointer {
+			embeddedType = embeddedType.Elem()
+		}
+		if field.Anonymous && jsonName == "" && embeddedType.Kind() == reflect.Struct {
+			if err := parser.addFields(embeddedType, path); err != nil {
+				return err
+			}
+			continue
+		}
 		if jsonName == "" {
 			jsonName = strings.ToLower(field.Name)
 		}
-		if jsonName == "-" {
+		if !supportedCLIType(field.Type) {
+			return fmt.Errorf("unsupported CLI field %s of type %s", jsonName, field.Type)
+		}
+		entry := cliField{path: path, name: jsonName}
+		if field.Tag.Get("cli") == "positional" {
+			parser.positionals = append(parser.positionals, entry)
 			continue
 		}
-		fieldNames[i] = jsonName
-		cliTag := field.Tag.Get("cli")
-		switch cliTag {
-		case "-":
-			continue
-		case "positional":
-			positionals = append(positionals, i)
-		default:
-			name := cliTag
-			if name == "" {
-				name = strings.ReplaceAll(jsonName, "_", "-")
-			}
-			flags[name] = i
+		name := field.Tag.Get("cli")
+		if name == "" {
+			name = strings.ReplaceAll(jsonName, "_", "-")
 		}
+		if _, exists := parser.flags[name]; exists {
+			return fmt.Errorf("duplicate CLI flag --%s", name)
+		}
+		entry.name = name
+		parser.flags[name] = entry
 	}
+	return nil
+}
+
+func supportedCLIType(fieldType reflect.Type) bool {
+	switch fieldType.Kind() {
+	case reflect.String, reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	default:
+		return false
+	}
+}
+
+func (parser *cliParser[In]) parse(args []string) (In, error) {
+	var input In
+	value := reflect.ValueOf(&input).Elem()
 
 	seenPositionals := 0
+	parseOptions := true
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if strings.HasPrefix(arg, "--") {
+		if parseOptions && arg == "--" {
+			parseOptions = false
+			continue
+		}
+		if parseOptions && strings.HasPrefix(arg, "--") {
 			name, raw, hasValue := strings.Cut(strings.TrimPrefix(arg, "--"), "=")
-			fieldIndex, exists := flags[name]
+			entry, exists := parser.flags[name]
 			if !exists {
 				return input, fmt.Errorf("unknown flag --%s", name)
 			}
-			field := value.Field(fieldIndex)
+			field := fieldByPath(value, entry.path)
 			if field.Kind() == reflect.Bool && !hasValue {
 				raw = "true"
 				hasValue = true
@@ -111,19 +166,32 @@ func parseInput[In any](args []string) (In, error) {
 			continue
 		}
 
-		if seenPositionals >= len(positionals) {
+		if seenPositionals >= len(parser.positionals) {
 			return input, fmt.Errorf("unexpected positional argument %q", arg)
 		}
-		fieldIndex := positionals[seenPositionals]
-		if err := setField(value.Field(fieldIndex), arg); err != nil {
-			return input, fmt.Errorf("%s: %w", fieldNames[fieldIndex], err)
+		entry := parser.positionals[seenPositionals]
+		if err := setField(fieldByPath(value, entry.path), arg); err != nil {
+			return input, fmt.Errorf("%s: %w", entry.name, err)
 		}
 		seenPositionals++
 	}
-	if seenPositionals < len(positionals) {
-		return input, fmt.Errorf("missing positional %s", fieldNames[positionals[seenPositionals]])
+	if seenPositionals < len(parser.positionals) {
+		return input, fmt.Errorf("missing positional %s", parser.positionals[seenPositionals].name)
 	}
 	return input, nil
+}
+
+func fieldByPath(value reflect.Value, path []int) reflect.Value {
+	for index, fieldIndex := range path {
+		value = value.Field(fieldIndex)
+		if index < len(path)-1 && value.Kind() == reflect.Pointer {
+			if value.IsNil() {
+				value.Set(reflect.New(value.Type().Elem()))
+			}
+			value = value.Elem()
+		}
+	}
+	return value
 }
 
 func setField(field reflect.Value, raw string) error {
