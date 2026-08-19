@@ -41,3 +41,8 @@ a later protocol supplies a compatible liveness mechanism.
 
 See `examples/greet` for a product-owned binary. This repository is under
 construction; `TASKS.md` is the current build ledger.
+
+The `mcptest` package starts a real command, negotiates MCP over stdio through
+the upstream SDK, and rejects any protocol other than 2026-07-28 by default.
+It keeps product integration tests on the public wire surface without copying
+JSON-RPC framing or process-teardown code.
