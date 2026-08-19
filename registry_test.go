@@ -332,3 +332,21 @@ func TestRegisterRejectsInvalidMCPHeaderFieldType(t *testing.T) {
 		t.Fatalf("Register error = %v, want header field type rejection", err)
 	}
 }
+
+func TestRegisterRejectsShadowedEmbeddedMCPHeader(t *testing.T) {
+	type Embedded struct {
+		Region string `json:"region" cli:"embedded-region" mcpheader:"Region"`
+	}
+	type input struct {
+		Embedded
+		Region string `json:"region" cli:"region"`
+	}
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "greet"},
+		func(context.Context, input) (greetOut, error) { return greetOut{}, nil },
+		kit.Renderer[greetOut]{Text: func(greetOut) (string, error) { return "", nil }},
+	)
+	if err == nil || !strings.Contains(err.Error(), "shadowed or ambiguous") {
+		t.Fatalf("Register error = %v, want shadowed header rejection", err)
+	}
+}
