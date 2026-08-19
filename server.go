@@ -23,8 +23,25 @@ func NewServer(
 		return nil, fmt.Errorf("mcp-kit: ServerOptions.KeepAlive uses the removed ping method under protocol 2026-07-28")
 	}
 	server := mcp.NewServer(implementation, options)
-	for _, tool := range registry.snapshot() {
-		tool.addTo(server)
+	if err := registry.AddTo(server); err != nil {
+		return nil, err
 	}
 	return server, nil
+}
+
+// AddTo projects every registered tool onto an existing SDK server. The first
+// projection seals the registry so a later registration cannot be omitted from
+// an already-mounted server. A sealed registry may be projected onto more than
+// one server.
+func (registry *Registry) AddTo(server *mcp.Server) error {
+	if registry == nil {
+		return fmt.Errorf("mcp-kit: nil registry")
+	}
+	if server == nil {
+		return fmt.Errorf("mcp-kit: nil MCP server")
+	}
+	for _, tool := range registry.projectionSnapshot() {
+		tool.addTo(server)
+	}
+	return nil
 }

@@ -26,6 +26,8 @@ Install product policy with `Registry.Use` before registering tools. The same
 middleware chain wraps CLI and MCP calls, and the first middleware added runs
 outermost. Middleware receives the tool definition but no surface identity, so
 license, recovery, audit, and response policy can remain handler-neutral.
+`Registry.AddTo` mounts a completed registry on a product-owned SDK server;
+the first mount seals registration so later tools cannot disappear silently.
 
 Long-running handlers call `ReportProgress` without learning their surface.
 The CLI writes progress to stderr; MCP sends a progress notification only when

@@ -49,6 +49,7 @@ type Registry struct {
 	order      []string
 	middleware []Middleware
 	frozen     bool
+	sealed     bool
 }
 
 type registeredTool struct {
@@ -77,6 +78,9 @@ func (registry *Registry) Use(middleware ...Middleware) error {
 	}
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	if registry.sealed {
+		return fmt.Errorf("mcp-kit: registry is already projected onto an MCP server")
+	}
 	if registry.frozen {
 		return fmt.Errorf("mcp-kit: middleware must be installed before tools are registered")
 	}
@@ -199,6 +203,9 @@ func Register[In, Out any](
 
 	registry.mu.Lock()
 	defer registry.mu.Unlock()
+	if registry.sealed {
+		return fmt.Errorf("mcp-kit: registry is already projected onto an MCP server")
+	}
 	if _, exists := registry.tools[spec.Name]; exists {
 		return fmt.Errorf("mcp-kit: tool %q is already registered", spec.Name)
 	}
@@ -224,9 +231,10 @@ func (registry *Registry) lookup(name string) (*registeredTool, bool) {
 	return tool, ok && !tool.spec.MCPOnly
 }
 
-func (registry *Registry) snapshot() []*registeredTool {
-	registry.mu.RLock()
-	defer registry.mu.RUnlock()
+func (registry *Registry) projectionSnapshot() []*registeredTool {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	registry.sealed = true
 	tools := make([]*registeredTool, 0, len(registry.order))
 	for _, name := range registry.order {
 		tools = append(tools, registry.tools[name])

@@ -65,6 +65,34 @@ func TestServerProjectsRegisteredHandler(t *testing.T) {
 	}
 }
 
+func TestRegistryAddsToolsToAnExistingSDKServer(t *testing.T) {
+	r := newRegistry(t)
+	server := mcp.NewServer(&mcp.Implementation{Name: "existing", Version: "0.1.0"}, nil)
+	if err := r.AddTo(server); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	listed, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Tools) != 1 || listed.Tools[0].Name != "greet" {
+		t.Fatalf("tools = %+v, want mounted greet tool", listed.Tools)
+	}
+}
+
 func TestServerRunsTheRegistryMiddlewareChain(t *testing.T) {
 	r := kit.NewRegistry()
 	err := r.Use(func(_ kit.Tool, next kit.Handler) kit.Handler {

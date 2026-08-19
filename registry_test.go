@@ -134,6 +134,20 @@ func TestRegistryRejectsNilMiddleware(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsRegistrationAfterProjection(t *testing.T) {
+	r := newRegistry(t)
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0.1.0"}, nil)
+	if err := r.AddTo(server); err != nil {
+		t.Fatal(err)
+	}
+	err := kit.Register(r, kit.Tool{Name: "late"}, greet, kit.Renderer[greetOut]{
+		Text: func(output greetOut) (string, error) { return output.Message, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "already projected") {
+		t.Fatalf("Register error = %v, want sealed-registry rejection", err)
+	}
+}
+
 type duplicateFlagsIn struct {
 	First  string `cli:"target"`
 	Second string `cli:"target"`
