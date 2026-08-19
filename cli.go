@@ -54,8 +54,9 @@ func Run(ctx context.Context, registry *Registry, args []string, stdout, _ io.Wr
 }
 
 type cliField struct {
-	path []int
-	name string
+	path      []int
+	name      string
+	fieldType reflect.Type
 }
 
 type cliParser[In any] struct {
@@ -102,8 +103,11 @@ func (parser *cliParser[In]) addFields(inputType reflect.Type, parentPath []int)
 		if !supportedCLIType(field.Type) {
 			return fmt.Errorf("unsupported CLI field %s of type %s", jsonName, field.Type)
 		}
-		entry := cliField{path: path, name: jsonName}
+		entry := cliField{path: path, name: jsonName, fieldType: field.Type}
 		if field.Tag.Get("cli") == "positional" {
+			if len(parser.positionals) > 0 && isCLISlice(parser.positionals[len(parser.positionals)-1].fieldType) {
+				return fmt.Errorf("positional slice %s must be last", parser.positionals[len(parser.positionals)-1].name)
+			}
 			parser.positionals = append(parser.positionals, entry)
 			continue
 		}
@@ -121,7 +125,28 @@ func (parser *cliParser[In]) addFields(inputType reflect.Type, parentPath []int)
 }
 
 func supportedCLIType(fieldType reflect.Type) bool {
-	kind := cliScalarKind(fieldType)
+	_, _, ok := cliFieldShape(fieldType)
+	return ok
+}
+
+func cliFieldShape(fieldType reflect.Type) (kind reflect.Kind, slice, ok bool) {
+	switch fieldType.Kind() {
+	case reflect.Pointer:
+		kind = fieldType.Elem().Kind()
+		return kind, false, supportedCLIScalar(kind)
+	case reflect.Slice:
+		kind = fieldType.Elem().Kind()
+		if kind == reflect.Uint8 {
+			return reflect.Invalid, false, false
+		}
+		return kind, true, supportedCLIScalar(kind)
+	default:
+		kind = fieldType.Kind()
+		return kind, false, supportedCLIScalar(kind)
+	}
+}
+
+func supportedCLIScalar(kind reflect.Kind) bool {
 	switch kind {
 	case reflect.String, reflect.Bool,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
@@ -131,6 +156,11 @@ func supportedCLIType(fieldType reflect.Type) bool {
 	default:
 		return false
 	}
+}
+
+func isCLISlice(fieldType reflect.Type) bool {
+	_, slice, ok := cliFieldShape(fieldType)
+	return ok && slice
 }
 
 func (parser *cliParser[In]) parse(args []string) (In, error) {
@@ -169,14 +199,21 @@ func (parser *cliParser[In]) parse(args []string) (In, error) {
 			continue
 		}
 
+		var entry cliField
 		if seenPositionals >= len(parser.positionals) {
-			return input, fmt.Errorf("unexpected positional argument %q", arg)
+			if len(parser.positionals) == 0 || !isCLISlice(parser.positionals[len(parser.positionals)-1].fieldType) {
+				return input, fmt.Errorf("unexpected positional argument %q", arg)
+			}
+			entry = parser.positionals[len(parser.positionals)-1]
+		} else {
+			entry = parser.positionals[seenPositionals]
 		}
-		entry := parser.positionals[seenPositionals]
 		if err := setField(fieldByPath(value, entry.path), arg); err != nil {
 			return input, fmt.Errorf("%s: %w", entry.name, err)
 		}
-		seenPositionals++
+		if seenPositionals < len(parser.positionals) {
+			seenPositionals++
+		}
 	}
 	if seenPositionals < len(parser.positionals) {
 		return input, fmt.Errorf("missing positional %s", parser.positionals[seenPositionals].name)
@@ -246,13 +283,9 @@ func setField(field reflect.Value, raw string) error {
 }
 
 func cliScalarKind(fieldType reflect.Type) reflect.Kind {
-	seen := make(map[reflect.Type]struct{})
-	for fieldType.Kind() == reflect.Pointer || fieldType.Kind() == reflect.Slice {
-		if _, exists := seen[fieldType]; exists {
-			return reflect.Invalid
-		}
-		seen[fieldType] = struct{}{}
-		fieldType = fieldType.Elem()
+	kind, _, ok := cliFieldShape(fieldType)
+	if !ok {
+		return reflect.Invalid
 	}
-	return fieldType.Kind()
+	return kind
 }

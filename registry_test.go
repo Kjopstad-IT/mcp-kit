@@ -87,6 +87,62 @@ type recursiveInput struct {
 	Values recursiveValues `json:"values"`
 }
 
+type byteSliceInput struct {
+	Data []byte `json:"data"`
+}
+
+func TestRegisterRejectsByteSliceCLIField(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "bytes"},
+		func(context.Context, byteSliceInput) (greetOut, error) { return greetOut{}, nil },
+		kit.Renderer[greetOut]{Text: func(greetOut) (string, error) { return "", nil }},
+	)
+	if err == nil || !strings.Contains(err.Error(), "unsupported CLI field data") {
+		t.Fatalf("Register error = %v, want byte-slice rejection", err)
+	}
+}
+
+type variadicInput struct {
+	Prefix string   `json:"prefix" cli:"positional"`
+	Values []string `json:"values" cli:"positional"`
+}
+
+func TestRunProjectsFinalSliceAsVariadicPositional(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "variadic"},
+		func(_ context.Context, input variadicInput) (greetOut, error) {
+			return greetOut{Message: input.Prefix + ":" + strings.Join(input.Values, ",")}, nil
+		},
+		kit.Renderer[greetOut]{Text: func(output greetOut) (string, error) { return output.Message, nil }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr testWriter
+	if err := kit.Run(context.Background(), r, []string{"variadic", "items", "one", "two"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "items:one,two\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
+type invalidVariadicInput struct {
+	Values []string `json:"values" cli:"positional"`
+	Suffix string   `json:"suffix" cli:"positional"`
+}
+
+func TestRegisterRejectsNonFinalPositionalSlice(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "variadic"},
+		func(context.Context, invalidVariadicInput) (greetOut, error) { return greetOut{}, nil },
+		kit.Renderer[greetOut]{Text: func(greetOut) (string, error) { return "", nil }},
+	)
+	if err == nil || !strings.Contains(err.Error(), "positional slice values must be last") {
+		t.Fatalf("Register error = %v, want non-final positional slice rejection", err)
+	}
+}
+
 func TestRegisterRejectsRecursiveCLIField(t *testing.T) {
 	r := kit.NewRegistry()
 	err := kit.Register(r, kit.Tool{Name: "recursive"},
