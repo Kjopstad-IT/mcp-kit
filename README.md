@@ -21,6 +21,10 @@ remains available as structured content.
 Tools project to both surfaces by default. Set `Tool.MCPOnly` when a valid MCP
 input, such as a nested object or map, has no unambiguous CLI projection. An
 MCP-only tool is not visible to `Run` and does not require `Renderer.Text`.
+For a composed 2026-07-28 schema, set `Tool.MCPInputSchema` together with
+`MCPOnly`. Registration clones and validates the schema and requires the MCP
+input root to remain an object. Dual-surface tools reject schema overrides so
+their Go input type stays the source of truth for both projections.
 
 Install product policy with `Registry.Use` before registering tools. The same
 middleware chain wraps CLI and MCP calls, and the first middleware added runs

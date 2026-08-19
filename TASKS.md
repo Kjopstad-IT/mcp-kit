@@ -6,4 +6,5 @@
 - [ ] Rebuild harness-bench gitea-mcp on the registry and pass its oracles.
 - [x] Add progress, non-text content, effects annotations, and header stripping.
 - [x] Add surface-neutral middleware and product-owned server mounting.
+- [x] Support composed input schemas on explicit MCP-only tools.
 - [ ] Prove imports in Rqwstr and Agentverk before declaring a module stable.

@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"sync"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -19,6 +20,10 @@ type Tool struct {
 	Description string
 	Annotations *mcp.ToolAnnotations
 	MCPOnly     bool
+	// MCPInputSchema overrides Go inference for an MCP-only tool. Dual-surface
+	// tools reject overrides so their typed input remains the single source for
+	// both projections.
+	MCPInputSchema *jsonschema.Schema
 }
 
 // Renderer defines the surface renderers for a typed output. Text is the
@@ -110,6 +115,9 @@ func Register[In, Out any](
 	if renderer.MCPText != nil && renderer.MCPContent != nil {
 		return fmt.Errorf("mcp-kit: tool %q has more than one MCP renderer", spec.Name)
 	}
+	if spec.MCPInputSchema != nil && !spec.MCPOnly {
+		return fmt.Errorf("mcp-kit: tool %q custom input schema requires an MCP-only tool", spec.Name)
+	}
 	var parser *cliParser[In]
 	if !spec.MCPOnly {
 		var err error
@@ -118,9 +126,24 @@ func Register[In, Out any](
 			return fmt.Errorf("mcp-kit: tool %q: %w", spec.Name, err)
 		}
 	}
-	inputSchema, err := inputSchemaFor[In]()
-	if err != nil {
-		return fmt.Errorf("mcp-kit: tool %q: %w", spec.Name, err)
+	var inputSchema *jsonschema.Schema
+	if spec.MCPInputSchema != nil {
+		cloned, schemaErr := cloneAndValidateInputSchema(spec.MCPInputSchema)
+		if schemaErr != nil {
+			return fmt.Errorf("mcp-kit: tool %q custom input schema: %w", spec.Name, schemaErr)
+		}
+		inputSchema = cloned
+		middlewareSchema, schemaErr := cloneAndValidateInputSchema(inputSchema)
+		if schemaErr != nil {
+			return fmt.Errorf("mcp-kit: tool %q custom input schema: %w", spec.Name, schemaErr)
+		}
+		spec.MCPInputSchema = middlewareSchema
+	} else {
+		inferred, schemaErr := inputSchemaFor[In]()
+		if schemaErr != nil {
+			return fmt.Errorf("mcp-kit: tool %q: %w", spec.Name, schemaErr)
+		}
+		inputSchema = inferred
 	}
 	middleware := registry.freezeMiddleware()
 
