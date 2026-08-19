@@ -138,18 +138,30 @@ func Register[In, Out any](
 			return fmt.Errorf("mcp-kit: tool %q middleware returned a nil handler", spec.Name)
 		}
 	}
+	typedOutput := func(value any) (Out, error) {
+		output, ok := value.(Out)
+		if !ok {
+			var zero Out
+			return zero, fmt.Errorf("mcp-kit: tool %q returned %T", spec.Name, value)
+		}
+		return output, nil
+	}
 	if !spec.MCPOnly {
 		entry.invoke = func(ctx context.Context, args []string) (any, error) {
 			input, err := parser.parse(args)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", spec.Name, err)
 			}
-			return entry.handle(ctx, input)
+			value, err := entry.handle(ctx, input)
+			if err != nil {
+				return nil, err
+			}
+			return typedOutput(value)
 		}
 		entry.renderText = func(value any) (string, error) {
-			output, ok := value.(Out)
-			if !ok {
-				return "", fmt.Errorf("mcp-kit: tool %q returned %T", spec.Name, value)
+			output, err := typedOutput(value)
+			if err != nil {
+				return "", err
 			}
 			return renderer.Text(output)
 		}
@@ -177,9 +189,9 @@ func Register[In, Out any](
 			if err != nil {
 				return nil, zero, err
 			}
-			output, ok := value.(Out)
-			if !ok {
-				return nil, zero, fmt.Errorf("mcp-kit: tool %q returned %T", spec.Name, value)
+			output, err := typedOutput(value)
+			if err != nil {
+				return nil, zero, err
 			}
 			if renderer.MCPContent != nil {
 				content, renderErr := renderer.MCPContent(output)

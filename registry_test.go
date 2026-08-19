@@ -127,6 +127,30 @@ func TestRegistryRejectsMiddlewareAfterRegistration(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsWrongMiddlewareOutputOnJSONCLI(t *testing.T) {
+	r := kit.NewRegistry()
+	err := r.Use(func(_ kit.Tool, _ kit.Handler) kit.Handler {
+		return func(context.Context, any) (any, error) { return "wrong type", nil }
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = kit.Register(r, kit.Tool{Name: "greet"}, greet, kit.Renderer[greetOut]{
+		Text: func(output greetOut) (string, error) { return output.Message, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr testWriter
+	err = kit.Run(context.Background(), r, []string{"greet", "Ada", "--json"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "returned string") {
+		t.Fatalf("Run error = %v, want output-type rejection", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no wrong-schema JSON", stdout.String())
+	}
+}
+
 func TestRegistryRejectsNilMiddleware(t *testing.T) {
 	err := kit.NewRegistry().Use(nil)
 	if err == nil || !strings.Contains(err.Error(), "nil middleware") {
