@@ -18,6 +18,10 @@ fields become required CLI flags, and `--json` is reserved for output. A
 renderer can also provide an exact MCP text block while the typed output
 remains available as structured content.
 
+Tools project to both surfaces by default. Set `Tool.MCPOnly` when a valid MCP
+input, such as a nested object or map, has no unambiguous CLI projection. An
+MCP-only tool is not visible to `Run` and does not require `Renderer.Text`.
+
 Long-running handlers call `ReportProgress` without learning their surface.
 The CLI writes progress to stderr; MCP sends a progress notification only when
 the request supplies a progress token. `Renderer.MCPContent` emits image,
