@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	kit "github.com/Kjopstad-IT/mcp-kit"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -269,6 +270,62 @@ func TestMCPOnlyToolNeedsNoCLITextRendererAndIsHiddenFromRun(t *testing.T) {
 	err = kit.Run(context.Background(), r, []string{"nested"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), `unknown tool "nested"`) {
 		t.Fatalf("Run error = %v, want MCP-only tool hidden from CLI", err)
+	}
+}
+
+func TestRegisterRejectsCustomSchemaOnDualSurfaceTool(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{
+		Name: "greet", MCPInputSchema: &jsonschema.Schema{Type: "object"},
+	}, greet, kit.Renderer[greetOut]{
+		Text: func(output greetOut) (string, error) { return output.Message, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "MCP-only") {
+		t.Fatalf("Register error = %v, want dual-surface custom-schema rejection", err)
+	}
+}
+
+func TestRegisterRejectsInvalidCustomInputSchema(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{
+		Name: "invalid", MCPOnly: true,
+		MCPInputSchema: &jsonschema.Schema{Type: "object", Types: []string{"object"}},
+	}, func(context.Context, map[string]any) (greetOut, error) {
+		return greetOut{}, nil
+	}, kit.Renderer[greetOut]{})
+	if err == nil || !strings.Contains(err.Error(), "custom input schema") {
+		t.Fatalf("Register error = %v, want invalid-schema rejection", err)
+	}
+}
+
+func TestRegisterRejectsCustomInputSchemaWithoutObjectRoot(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{
+		Name: "invalid", MCPOnly: true,
+		MCPInputSchema: &jsonschema.Schema{OneOf: []*jsonschema.Schema{{Type: "object"}}},
+	}, func(context.Context, map[string]any) (greetOut, error) {
+		return greetOut{}, nil
+	}, kit.Renderer[greetOut]{})
+	if err == nil || !strings.Contains(err.Error(), `type "object"`) {
+		t.Fatalf("Register error = %v, want object-root rejection", err)
+	}
+}
+
+func TestRegisterRejectsInvalidHeaderInCustomInputSchema(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{
+		Name: "invalid", MCPOnly: true,
+		MCPInputSchema: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"token": {Type: "string", Extra: map[string]any{"x-mcp-header": "bad header"}},
+			},
+		},
+	}, func(context.Context, map[string]any) (greetOut, error) {
+		return greetOut{}, nil
+	}, kit.Renderer[greetOut]{})
+	if err == nil || !strings.Contains(err.Error(), "x-mcp-header") {
+		t.Fatalf("Register error = %v, want header rejection", err)
 	}
 }
 

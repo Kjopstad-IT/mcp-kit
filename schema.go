@@ -1,13 +1,75 @@
 package mcpkit
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"unicode"
 
 	"github.com/google/jsonschema-go/jsonschema"
 )
+
+func cloneAndValidateInputSchema(source *jsonschema.Schema) (*jsonschema.Schema, error) {
+	encoded, err := json.Marshal(source)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %w", err)
+	}
+	var clone jsonschema.Schema
+	if err := json.Unmarshal(encoded, &clone); err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
+	if clone.Type != "object" {
+		return nil, fmt.Errorf(`root must have type "object"`)
+	}
+	if err := validateCustomMCPHeaders(clone.Properties, "", make(map[string]string)); err != nil {
+		return nil, err
+	}
+	if _, err := clone.Resolve(nil); err != nil {
+		return nil, fmt.Errorf("validate: %w", err)
+	}
+	return &clone, nil
+}
+
+func validateCustomMCPHeaders(properties map[string]*jsonschema.Schema, parent string, seen map[string]string) error {
+	names := make([]string, 0, len(properties))
+	for name := range properties {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		property := properties[name]
+		if property == nil {
+			continue
+		}
+		path := name
+		if parent != "" {
+			path = parent + "." + name
+		}
+		if raw, exists := property.Extra["x-mcp-header"]; exists {
+			header, ok := raw.(string)
+			if !ok || header == "" {
+				return fmt.Errorf("property %s: x-mcp-header must be a non-empty string", path)
+			}
+			if property.Type != "string" && property.Type != "integer" && property.Type != "boolean" {
+				return fmt.Errorf("property %s: x-mcp-header requires a string, integer, or boolean", path)
+			}
+			if !validHeaderName(header) {
+				return fmt.Errorf("property %s: invalid x-mcp-header %q", path, header)
+			}
+			folded := strings.ToLower(header)
+			if prior, duplicate := seen[folded]; duplicate {
+				return fmt.Errorf("properties %s and %s: duplicate x-mcp-header %q", prior, path, header)
+			}
+			seen[folded] = path
+		}
+		if err := validateCustomMCPHeaders(property.Properties, path, seen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func inputSchemaFor[In any]() (*jsonschema.Schema, error) {
 	schema, err := jsonschema.For[In](nil)

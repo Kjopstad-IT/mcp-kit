@@ -9,6 +9,7 @@ import (
 	"time"
 
 	kit "github.com/Kjopstad-IT/mcp-kit"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -254,6 +255,93 @@ func TestServerProjectsMCPOnlyNestedHandler(t *testing.T) {
 	structured, ok := result.StructuredContent.(map[string]any)
 	if !ok || structured["message"] != "ada:platform" {
 		t.Fatalf("structured content = %#v", result.StructuredContent)
+	}
+}
+
+func TestServerProjectsComposedMCPOnlyInputSchema(t *testing.T) {
+	custom := &jsonschema.Schema{Type: "object", OneOf: []*jsonschema.Schema{
+		{
+			Type:       "object",
+			Properties: map[string]*jsonschema.Schema{"text": {Type: "string"}},
+			Required:   []string{"text"},
+		},
+		{
+			Type:       "object",
+			Properties: map[string]*jsonschema.Schema{"count": {Type: "integer"}},
+			Required:   []string{"count"},
+		},
+	}}
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{
+		Name: "composed", MCPOnly: true, MCPInputSchema: custom,
+	}, func(_ context.Context, input map[string]any) (greetOut, error) {
+		if text, ok := input["text"].(string); ok {
+			return greetOut{Message: text}, nil
+		}
+		return greetOut{Message: fmt.Sprint(input["count"])}, nil
+	}, kit.Renderer[greetOut]{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Registration owns a clone. Later caller mutation must not change the wire
+	// contract mounted on a server.
+	custom.OneOf = nil
+
+	ctx := context.Background()
+	server, err := kit.NewServer(r, &mcp.Implementation{Name: "test", Version: "0.1.0"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	listed, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Tools) != 1 {
+		t.Fatalf("tools = %+v, want composed tool", listed.Tools)
+	}
+	schemaJSON, err := json.Marshal(listed.Tools[0].InputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		OneOf []json.RawMessage `json:"oneOf"`
+	}
+	if err := json.Unmarshal(schemaJSON, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if len(schema.OneOf) != 2 {
+		t.Fatalf("input schema = %s, want two oneOf branches", schemaJSON)
+	}
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name: "composed", Arguments: map[string]any{"text": "Ada"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	structured, ok := result.StructuredContent.(map[string]any)
+	if !ok || structured["message"] != "Ada" {
+		t.Fatalf("structured content = %#v", result.StructuredContent)
+	}
+	invalid, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name: "composed", Arguments: map[string]any{"unknown": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !invalid.IsError {
+		t.Fatalf("invalid result = %+v, want schema validation error", invalid)
 	}
 }
 
