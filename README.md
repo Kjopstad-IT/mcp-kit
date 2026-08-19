@@ -10,8 +10,10 @@ The product owns its binary and mounts the components it needs. Handlers do not
 receive surface information. CLI output is human text by default and JSON when
 requested. The core is MIT; licensing is a separate plug.
 
-Repeated flags populate slice inputs, and flags for pointer scalars preserve
-the difference between absent and explicitly empty values. A renderer can also
+Repeated flags populate scalar-slice inputs, and a final positional slice is
+variadic. Flags for pointer scalars preserve the difference between absent and
+explicitly empty values. Byte slices and nested container shapes are rejected
+because they do not have an unambiguous CLI projection. A renderer can also
 provide an exact MCP text block while the typed output remains available as
 structured content.
 
