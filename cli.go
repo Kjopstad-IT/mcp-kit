@@ -121,9 +121,8 @@ func (parser *cliParser[In]) addFields(inputType reflect.Type, parentPath []int)
 }
 
 func supportedCLIType(fieldType reflect.Type) bool {
-	switch fieldType.Kind() {
-	case reflect.Pointer, reflect.Slice:
-		return supportedCLIType(fieldType.Elem())
+	kind := cliScalarKind(fieldType)
+	switch kind {
 	case reflect.String, reflect.Bool,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
@@ -247,7 +246,12 @@ func setField(field reflect.Value, raw string) error {
 }
 
 func cliScalarKind(fieldType reflect.Type) reflect.Kind {
+	seen := make(map[reflect.Type]struct{})
 	for fieldType.Kind() == reflect.Pointer || fieldType.Kind() == reflect.Slice {
+		if _, exists := seen[fieldType]; exists {
+			return reflect.Invalid
+		}
+		seen[fieldType] = struct{}{}
 		fieldType = fieldType.Elem()
 	}
 	return fieldType.Kind()

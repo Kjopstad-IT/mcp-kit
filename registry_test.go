@@ -81,6 +81,23 @@ type collectionOutput struct {
 	Body   *string  `json:"body"`
 }
 
+type recursiveValues []recursiveValues
+
+type recursiveInput struct {
+	Values recursiveValues `json:"values"`
+}
+
+func TestRegisterRejectsRecursiveCLIField(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "recursive"},
+		func(context.Context, recursiveInput) (greetOut, error) { return greetOut{}, nil },
+		kit.Renderer[greetOut]{Text: func(greetOut) (string, error) { return "", nil }},
+	)
+	if err == nil || !strings.Contains(err.Error(), "unsupported CLI field values") {
+		t.Fatalf("Register error = %v, want recursive field rejection", err)
+	}
+}
+
 func TestRunProjectsRepeatedSlicesAndOptionalPointers(t *testing.T) {
 	r := kit.NewRegistry()
 	err := kit.Register(r, kit.Tool{Name: "collect"},
