@@ -32,15 +32,28 @@ type Renderer[Out any] struct {
 	MCPContent func(Out) ([]mcp.Content, error)
 }
 
+// Handler is the type-erased form of a registered typed handler. Middleware
+// may inspect or replace input and output values, but should preserve their
+// registered Go types unless it deliberately wants type validation to fail.
+type Handler func(context.Context, any) (any, error)
+
+// Middleware wraps every subsequently registered handler. The Tool value lets
+// a product select policy by tool identity without exposing the active surface
+// to the handler. Middleware added first runs outermost.
+type Middleware func(Tool, Handler) Handler
+
 // Registry owns a generation of tool definitions.
 type Registry struct {
-	mu    sync.RWMutex
-	tools map[string]*registeredTool
-	order []string
+	mu         sync.RWMutex
+	tools      map[string]*registeredTool
+	order      []string
+	middleware []Middleware
+	frozen     bool
 }
 
 type registeredTool struct {
 	spec       Tool
+	handle     Handler
 	invoke     func(context.Context, []string) (any, error)
 	renderText func(any) (string, error)
 	addTo      func(*mcp.Server)
@@ -49,6 +62,26 @@ type registeredTool struct {
 // NewRegistry returns an empty tool registry.
 func NewRegistry() *Registry {
 	return &Registry{tools: make(map[string]*registeredTool)}
+}
+
+// Use appends registry-wide middleware. Middleware must be installed before
+// the first tool registration so every surface receives the same chain.
+func (registry *Registry) Use(middleware ...Middleware) error {
+	if registry == nil {
+		return fmt.Errorf("mcp-kit: nil registry")
+	}
+	for _, candidate := range middleware {
+		if candidate == nil {
+			return fmt.Errorf("mcp-kit: nil middleware")
+		}
+	}
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if registry.frozen {
+		return fmt.Errorf("mcp-kit: middleware must be installed before tools are registered")
+	}
+	registry.middleware = append(registry.middleware, middleware...)
+	return nil
 }
 
 // Register adds one typed, surface-neutral handler to a registry.
@@ -85,15 +118,29 @@ func Register[In, Out any](
 	if err != nil {
 		return fmt.Errorf("mcp-kit: tool %q: %w", spec.Name, err)
 	}
+	middleware := registry.freezeMiddleware()
 
 	entry := &registeredTool{spec: spec}
+	entry.handle = func(ctx context.Context, input any) (any, error) {
+		typedInput, ok := input.(In)
+		if !ok {
+			return nil, fmt.Errorf("mcp-kit: tool %q received %T", spec.Name, input)
+		}
+		return handler(ctx, typedInput)
+	}
+	for i := len(middleware) - 1; i >= 0; i-- {
+		entry.handle = middleware[i](spec, entry.handle)
+		if entry.handle == nil {
+			return fmt.Errorf("mcp-kit: tool %q middleware returned a nil handler", spec.Name)
+		}
+	}
 	if !spec.MCPOnly {
 		entry.invoke = func(ctx context.Context, args []string) (any, error) {
 			input, err := parser.parse(args)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", spec.Name, err)
 			}
-			return handler(ctx, input)
+			return entry.handle(ctx, input)
 		}
 		entry.renderText = func(value any) (string, error) {
 			output, ok := value.(Out)
@@ -111,6 +158,7 @@ func Register[In, Out any](
 			Annotations: spec.Annotations,
 			InputSchema: inputSchema,
 		}, func(ctx context.Context, request *mcp.CallToolRequest, input In) (*mcp.CallToolResult, Out, error) {
+			var zero Out
 			if token := request.Params.GetProgressToken(); token != nil {
 				ctx = withProgressReporter(ctx, func(ctx context.Context, progress Progress) error {
 					return request.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
@@ -121,9 +169,13 @@ func Register[In, Out any](
 					})
 				})
 			}
-			output, err := handler(ctx, input)
+			value, err := entry.handle(ctx, input)
 			if err != nil {
-				return nil, output, err
+				return nil, zero, err
+			}
+			output, ok := value.(Out)
+			if !ok {
+				return nil, zero, fmt.Errorf("mcp-kit: tool %q returned %T", spec.Name, value)
 			}
 			if renderer.MCPContent != nil {
 				content, renderErr := renderer.MCPContent(output)
@@ -153,6 +205,13 @@ func Register[In, Out any](
 	registry.tools[spec.Name] = entry
 	registry.order = append(registry.order, spec.Name)
 	return nil
+}
+
+func (registry *Registry) freezeMiddleware() []Middleware {
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	registry.frozen = true
+	return append([]Middleware(nil), registry.middleware...)
 }
 
 func (registry *Registry) lookup(name string) (*registeredTool, bool) {
