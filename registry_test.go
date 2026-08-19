@@ -133,6 +133,40 @@ type byteSliceInput struct {
 	Data []byte `json:"data"`
 }
 
+type nestedInput struct {
+	Filter struct {
+		Owner string `json:"owner"`
+	} `json:"filter"`
+	Labels map[string]string `json:"labels,omitempty"`
+}
+
+func TestRegisterRejectsNestedCLIFieldsByDefault(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "nested"},
+		func(context.Context, nestedInput) (greetOut, error) { return greetOut{}, nil },
+		kit.Renderer[greetOut]{Text: func(greetOut) (string, error) { return "", nil }},
+	)
+	if err == nil || !strings.Contains(err.Error(), "unsupported CLI field filter") {
+		t.Fatalf("Register error = %v, want nested-field rejection", err)
+	}
+}
+
+func TestMCPOnlyToolNeedsNoCLITextRendererAndIsHiddenFromRun(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "nested", MCPOnly: true},
+		func(context.Context, nestedInput) (greetOut, error) { return greetOut{}, nil },
+		kit.Renderer[greetOut]{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr testWriter
+	err = kit.Run(context.Background(), r, []string{"nested"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), `unknown tool "nested"`) {
+		t.Fatalf("Run error = %v, want MCP-only tool hidden from CLI", err)
+	}
+}
+
 func TestRegisterRejectsByteSliceCLIField(t *testing.T) {
 	r := kit.NewRegistry()
 	err := kit.Register(r, kit.Tool{Name: "bytes"},

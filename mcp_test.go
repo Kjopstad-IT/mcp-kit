@@ -64,6 +64,57 @@ func TestServerProjectsRegisteredHandler(t *testing.T) {
 	}
 }
 
+func TestServerProjectsMCPOnlyNestedHandler(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "nested", MCPOnly: true},
+		func(_ context.Context, input nestedInput) (greetOut, error) {
+			return greetOut{Message: input.Filter.Owner + ":" + input.Labels["team"]}, nil
+		},
+		kit.Renderer[greetOut]{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	server, err := kit.NewServer(r, &mcp.Implementation{Name: "test", Version: "0.1.0"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	listed, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Tools) != 1 || listed.Tools[0].Name != "nested" {
+		t.Fatalf("tools = %+v, want MCP-only nested tool", listed.Tools)
+	}
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name: "nested",
+		Arguments: map[string]any{
+			"filter": map[string]any{"owner": "ada"},
+			"labels": map[string]any{"team": "platform"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	structured, ok := result.StructuredContent.(map[string]any)
+	if !ok || structured["message"] != "ada:platform" {
+		t.Fatalf("structured content = %#v", result.StructuredContent)
+	}
+}
+
 func TestServerUsesExactMCPTextAndKeepsStructuredContent(t *testing.T) {
 	r := kit.NewRegistry()
 	err := kit.Register(r, kit.Tool{Name: "greet"}, greet, kit.Renderer[greetOut]{

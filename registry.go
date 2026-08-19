@@ -11,12 +11,14 @@ import (
 
 var toolNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 
-// Tool describes one handler projected into CLI and MCP surfaces.
+// Tool describes one handler projected into CLI and MCP surfaces. MCPOnly
+// keeps a tool off the CLI when its typed input has no unambiguous CLI shape.
 type Tool struct {
 	Name        string
 	Title       string
 	Description string
 	Annotations *mcp.ToolAnnotations
+	MCPOnly     bool
 }
 
 // Renderer defines the surface renderers for a typed output. Text is the
@@ -65,15 +67,19 @@ func Register[In, Out any](
 	if handler == nil {
 		return fmt.Errorf("mcp-kit: tool %q has nil handler", spec.Name)
 	}
-	if renderer.Text == nil {
+	if !spec.MCPOnly && renderer.Text == nil {
 		return fmt.Errorf("mcp-kit: tool %q has no text renderer", spec.Name)
 	}
 	if renderer.MCPText != nil && renderer.MCPContent != nil {
 		return fmt.Errorf("mcp-kit: tool %q has more than one MCP renderer", spec.Name)
 	}
-	parser, err := buildCLIParser[In]()
-	if err != nil {
-		return fmt.Errorf("mcp-kit: tool %q: %w", spec.Name, err)
+	var parser *cliParser[In]
+	if !spec.MCPOnly {
+		var err error
+		parser, err = buildCLIParser[In]()
+		if err != nil {
+			return fmt.Errorf("mcp-kit: tool %q: %w", spec.Name, err)
+		}
 	}
 	inputSchema, err := inputSchemaFor[In]()
 	if err != nil {
@@ -81,19 +87,21 @@ func Register[In, Out any](
 	}
 
 	entry := &registeredTool{spec: spec}
-	entry.invoke = func(ctx context.Context, args []string) (any, error) {
-		input, err := parser.parse(args)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", spec.Name, err)
+	if !spec.MCPOnly {
+		entry.invoke = func(ctx context.Context, args []string) (any, error) {
+			input, err := parser.parse(args)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", spec.Name, err)
+			}
+			return handler(ctx, input)
 		}
-		return handler(ctx, input)
-	}
-	entry.renderText = func(value any) (string, error) {
-		output, ok := value.(Out)
-		if !ok {
-			return "", fmt.Errorf("mcp-kit: tool %q returned %T", spec.Name, value)
+		entry.renderText = func(value any) (string, error) {
+			output, ok := value.(Out)
+			if !ok {
+				return "", fmt.Errorf("mcp-kit: tool %q returned %T", spec.Name, value)
+			}
+			return renderer.Text(output)
 		}
-		return renderer.Text(output)
 	}
 	entry.addTo = func(server *mcp.Server) {
 		mcp.AddTool(server, &mcp.Tool{
@@ -154,7 +162,7 @@ func (registry *Registry) lookup(name string) (*registeredTool, bool) {
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
 	tool, ok := registry.tools[name]
-	return tool, ok
+	return tool, ok && !tool.spec.MCPOnly
 }
 
 func (registry *Registry) snapshot() []*registeredTool {
