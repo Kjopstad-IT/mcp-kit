@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	kit "github.com/Kjopstad-IT/mcp-kit"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type greetIn struct {
@@ -289,5 +290,45 @@ func TestRendererFailurePropagates(t *testing.T) {
 	err = kit.Run(context.Background(), r, []string{"greet", "Ada"}, &stdout, &stderr)
 	if err == nil || err.Error() != "render failed" {
 		t.Fatalf("Run error = %v, want render failed", err)
+	}
+}
+
+func TestRegisterRejectsAmbiguousMCPRenderers(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "greet"}, greet, kit.Renderer[greetOut]{
+		Text:       func(out greetOut) (string, error) { return out.Message, nil },
+		MCPText:    func(out greetOut) (string, error) { return out.Message, nil },
+		MCPContent: func(greetOut) ([]mcp.Content, error) { return nil, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "MCP renderer") {
+		t.Fatalf("Register error = %v, want ambiguous MCP renderer rejection", err)
+	}
+}
+
+func TestRegisterRejectsInvalidMCPHeaderName(t *testing.T) {
+	type input struct {
+		Region string `json:"region" mcpheader:"Bad Header"`
+	}
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "greet"},
+		func(context.Context, input) (greetOut, error) { return greetOut{}, nil },
+		kit.Renderer[greetOut]{Text: func(greetOut) (string, error) { return "", nil }},
+	)
+	if err == nil || !strings.Contains(err.Error(), "invalid mcpheader") {
+		t.Fatalf("Register error = %v, want invalid header rejection", err)
+	}
+}
+
+func TestRegisterRejectsInvalidMCPHeaderFieldType(t *testing.T) {
+	type input struct {
+		Weight float64 `json:"weight" mcpheader:"Weight"`
+	}
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "greet"},
+		func(context.Context, input) (greetOut, error) { return greetOut{}, nil },
+		kit.Renderer[greetOut]{Text: func(greetOut) (string, error) { return "", nil }},
+	)
+	if err == nil || !strings.Contains(err.Error(), "string, integer, or boolean") {
+		t.Fatalf("Register error = %v, want header field type rejection", err)
 	}
 }
