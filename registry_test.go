@@ -71,6 +71,44 @@ type duplicateFlagsIn struct {
 	Second string `cli:"target"`
 }
 
+type collectionInput struct {
+	Labels []string `json:"labels,omitempty"`
+	Body   *string  `json:"body,omitempty"`
+}
+
+type collectionOutput struct {
+	Labels []string `json:"labels"`
+	Body   *string  `json:"body"`
+}
+
+func TestRunProjectsRepeatedSlicesAndOptionalPointers(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "collect"},
+		func(_ context.Context, input collectionInput) (collectionOutput, error) {
+			if got, want := strings.Join(input.Labels, ","), "bug,urgent"; got != want {
+				return collectionOutput{}, fmt.Errorf("labels = %q, want %q", got, want)
+			}
+			if input.Body == nil || *input.Body != "" {
+				return collectionOutput{}, fmt.Errorf("body = %#v, want pointer to empty string", input.Body)
+			}
+			return collectionOutput(input), nil
+		},
+		kit.Renderer[collectionOutput]{Text: func(collectionOutput) (string, error) { return "ok", nil }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr testWriter
+	if err := kit.Run(context.Background(), r, []string{
+		"collect", "--labels", "bug", "--labels=urgent", "--body", "",
+	}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "ok\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
 func TestRegisterRejectsDuplicateCLIFlags(t *testing.T) {
 	r := kit.NewRegistry()
 	err := kit.Register(r, kit.Tool{Name: "duplicate"},

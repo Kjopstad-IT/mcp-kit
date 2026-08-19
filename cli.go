@@ -120,6 +120,8 @@ func (parser *cliParser[In]) addFields(inputType reflect.Type, parentPath []int)
 
 func supportedCLIType(fieldType reflect.Type) bool {
 	switch fieldType.Kind() {
+	case reflect.Pointer, reflect.Slice:
+		return supportedCLIType(fieldType.Elem())
 	case reflect.String, reflect.Bool,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
@@ -149,7 +151,7 @@ func (parser *cliParser[In]) parse(args []string) (In, error) {
 				return input, fmt.Errorf("unknown flag --%s", name)
 			}
 			field := fieldByPath(value, entry.path)
-			if field.Kind() == reflect.Bool && !hasValue {
+			if cliScalarKind(field.Type()) == reflect.Bool && !hasValue {
 				raw = "true"
 				hasValue = true
 			}
@@ -195,6 +197,20 @@ func fieldByPath(value reflect.Value, path []int) reflect.Value {
 }
 
 func setField(field reflect.Value, raw string) error {
+	if field.Kind() == reflect.Pointer {
+		if field.IsNil() {
+			field.Set(reflect.New(field.Type().Elem()))
+		}
+		return setField(field.Elem(), raw)
+	}
+	if field.Kind() == reflect.Slice {
+		element := reflect.New(field.Type().Elem()).Elem()
+		if err := setField(element, raw); err != nil {
+			return err
+		}
+		field.Set(reflect.Append(field, element))
+		return nil
+	}
 	switch field.Kind() {
 	case reflect.String:
 		field.SetString(raw)
@@ -226,4 +242,11 @@ func setField(field reflect.Value, raw string) error {
 		return fmt.Errorf("unsupported CLI field type %s", field.Type())
 	}
 	return nil
+}
+
+func cliScalarKind(fieldType reflect.Type) reflect.Kind {
+	for fieldType.Kind() == reflect.Pointer || fieldType.Kind() == reflect.Slice {
+		fieldType = fieldType.Elem()
+	}
+	return fieldType.Kind()
 }

@@ -19,10 +19,13 @@ type Tool struct {
 	Annotations *mcp.ToolAnnotations
 }
 
-// Renderer defines the human-readable CLI projection for a typed output.
-// JSON output is always derived from the typed value.
+// Renderer defines the surface renderers for a typed output. Text is the
+// human-readable CLI projection. JSON CLI output and MCP structured content
+// are always derived from the typed value. MCPText optionally supplies an
+// exact MCP text block for products that have a text-content wire contract.
 type Renderer[Out any] struct {
-	Text func(Out) (string, error)
+	Text    func(Out) (string, error)
+	MCPText func(Out) (string, error)
 }
 
 // Registry owns a generation of tool definitions.
@@ -91,7 +94,16 @@ func Register[In, Out any](
 			Annotations: spec.Annotations,
 		}, func(ctx context.Context, _ *mcp.CallToolRequest, input In) (*mcp.CallToolResult, Out, error) {
 			output, err := handler(ctx, input)
-			return nil, output, err
+			if err != nil || renderer.MCPText == nil {
+				return nil, output, err
+			}
+			text, err := renderer.MCPText(output)
+			if err != nil {
+				return nil, output, err
+			}
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: text}},
+			}, output, nil
 		})
 	}
 
