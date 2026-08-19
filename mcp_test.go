@@ -3,6 +3,7 @@ package mcpkit_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +62,147 @@ func TestServerProjectsRegisteredHandler(t *testing.T) {
 	structured, ok := result.StructuredContent.(map[string]any)
 	if !ok || structured["message"] != "HELLO, Ada" {
 		t.Fatalf("structured content = %#v", result.StructuredContent)
+	}
+}
+
+func TestRegistryAddsToolsToAnExistingSDKServer(t *testing.T) {
+	r := newRegistry(t)
+	server := mcp.NewServer(&mcp.Implementation{Name: "existing", Version: "0.1.0"}, nil)
+	if err := r.AddTo(server); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	listed, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Tools) != 1 || listed.Tools[0].Name != "greet" {
+		t.Fatalf("tools = %+v, want mounted greet tool", listed.Tools)
+	}
+}
+
+func TestServerRunsTheRegistryMiddlewareChain(t *testing.T) {
+	r := kit.NewRegistry()
+	err := r.Use(func(_ kit.Tool, next kit.Handler) kit.Handler {
+		return func(ctx context.Context, input any) (any, error) {
+			output, err := next(ctx, input)
+			if err != nil {
+				return nil, err
+			}
+			value := output.(greetOut)
+			value.Message = "wrapped:" + value.Message
+			return value, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = kit.Register(r, kit.Tool{Name: "greet"}, greet, kit.Renderer[greetOut]{
+		Text: func(output greetOut) (string, error) { return output.Message, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	server, err := kit.NewServer(r, &mcp.Implementation{Name: "test", Version: "0.1.0"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name: "greet", Arguments: map[string]any{"name": "Ada"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	structured, ok := result.StructuredContent.(map[string]any)
+	if !ok || structured["message"] != "wrapped:Hello, Ada" {
+		t.Fatalf("structured content = %#v", result.StructuredContent)
+	}
+}
+
+func TestRegistryMiddlewareCanDenyBothSurfacesBeforeTheHandler(t *testing.T) {
+	r := kit.NewRegistry()
+	err := r.Use(func(_ kit.Tool, _ kit.Handler) kit.Handler {
+		return func(context.Context, any) (any, error) {
+			return nil, fmt.Errorf("license required")
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	err = kit.Register(r, kit.Tool{Name: "greet"},
+		func(context.Context, greetIn) (greetOut, error) {
+			called = true
+			return greetOut{}, nil
+		},
+		kit.Renderer[greetOut]{Text: func(output greetOut) (string, error) { return output.Message, nil }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr testWriter
+	err = kit.Run(context.Background(), r, []string{"greet", "Ada"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "license required") {
+		t.Fatalf("Run error = %v, want middleware denial", err)
+	}
+
+	ctx := context.Background()
+	server, err := kit.NewServer(r, &mcp.Implementation{Name: "test", Version: "0.1.0"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+		Name: "greet", Arguments: map[string]any{"name": "Ada"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError || len(result.Content) != 1 {
+		t.Fatalf("result = %+v, want one error content block", result)
+	}
+	text, ok := result.Content[0].(*mcp.TextContent)
+	if !ok || !strings.Contains(text.Text, "license required") {
+		t.Fatalf("content = %#v, want middleware denial", result.Content)
+	}
+	if called {
+		t.Fatal("handler ran after middleware denial")
 	}
 }
 

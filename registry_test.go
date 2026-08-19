@@ -67,6 +67,111 @@ func TestRegisterRejectsMissingTextRenderer(t *testing.T) {
 	}
 }
 
+func TestRegistryMiddlewareWrapsCLIHandlerInOrder(t *testing.T) {
+	r := kit.NewRegistry()
+	var events []string
+	outer := func(spec kit.Tool, next kit.Handler) kit.Handler {
+		if spec.Name != "greet" {
+			t.Fatalf("middleware tool = %q, want greet", spec.Name)
+		}
+		return func(ctx context.Context, input any) (any, error) {
+			events = append(events, "outer before")
+			output, err := next(ctx, input)
+			events = append(events, "outer after")
+			return output, err
+		}
+	}
+	inner := func(_ kit.Tool, next kit.Handler) kit.Handler {
+		return func(ctx context.Context, input any) (any, error) {
+			events = append(events, "inner before")
+			output, err := next(ctx, input)
+			events = append(events, "inner after")
+			if err == nil {
+				value := output.(greetOut)
+				value.Message = "wrapped:" + value.Message
+				output = value
+			}
+			return output, err
+		}
+	}
+	if err := r.Use(outer, inner); err != nil {
+		t.Fatal(err)
+	}
+	err := kit.Register(r, kit.Tool{Name: "greet"},
+		func(_ context.Context, input greetIn) (greetOut, error) {
+			events = append(events, "handler")
+			return greet(context.Background(), input)
+		},
+		kit.Renderer[greetOut]{Text: func(output greetOut) (string, error) { return output.Message, nil }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr testWriter
+	if err := kit.Run(context.Background(), r, []string{"greet", "Ada"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "wrapped:Hello, Ada\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(events, ","), "outer before,inner before,handler,inner after,outer after"; got != want {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
+}
+
+func TestRegistryRejectsMiddlewareAfterRegistration(t *testing.T) {
+	r := newRegistry(t)
+	err := r.Use(func(_ kit.Tool, next kit.Handler) kit.Handler { return next })
+	if err == nil || !strings.Contains(err.Error(), "before tools") {
+		t.Fatalf("Use error = %v, want ordering rejection", err)
+	}
+}
+
+func TestRegistryRejectsWrongMiddlewareOutputOnJSONCLI(t *testing.T) {
+	r := kit.NewRegistry()
+	err := r.Use(func(_ kit.Tool, _ kit.Handler) kit.Handler {
+		return func(context.Context, any) (any, error) { return "wrong type", nil }
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = kit.Register(r, kit.Tool{Name: "greet"}, greet, kit.Renderer[greetOut]{
+		Text: func(output greetOut) (string, error) { return output.Message, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr testWriter
+	err = kit.Run(context.Background(), r, []string{"greet", "Ada", "--json"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "returned string") {
+		t.Fatalf("Run error = %v, want output-type rejection", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want no wrong-schema JSON", stdout.String())
+	}
+}
+
+func TestRegistryRejectsNilMiddleware(t *testing.T) {
+	err := kit.NewRegistry().Use(nil)
+	if err == nil || !strings.Contains(err.Error(), "nil middleware") {
+		t.Fatalf("Use error = %v, want nil rejection", err)
+	}
+}
+
+func TestRegistryRejectsRegistrationAfterProjection(t *testing.T) {
+	r := newRegistry(t)
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "0.1.0"}, nil)
+	if err := r.AddTo(server); err != nil {
+		t.Fatal(err)
+	}
+	err := kit.Register(r, kit.Tool{Name: "late"}, greet, kit.Renderer[greetOut]{
+		Text: func(output greetOut) (string, error) { return output.Message, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "already projected") {
+		t.Fatalf("Register error = %v, want sealed-registry rejection", err)
+	}
+}
+
 type duplicateFlagsIn struct {
 	First  string `cli:"target"`
 	Second string `cli:"target"`
