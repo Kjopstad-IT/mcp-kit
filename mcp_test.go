@@ -2,6 +2,7 @@ package mcpkit_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,19 @@ func TestServerProjectsRegisteredHandler(t *testing.T) {
 	}
 	if len(listed.Tools) != 1 || listed.Tools[0].Title != "Greet someone" {
 		t.Fatalf("tools = %+v, want titled greet tool", listed.Tools)
+	}
+	schemaJSON, err := json.Marshal(listed.Tools[0].InputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(schemaJSON, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if len(schema.Required) != 1 || schema.Required[0] != "name" {
+		t.Fatalf("required schema fields = %v, want [name]", schema.Required)
 	}
 
 	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
