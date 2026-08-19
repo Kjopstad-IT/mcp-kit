@@ -231,7 +231,14 @@ func (parser *cliParser[In]) parse(args []string) (In, error) {
 		}
 	}
 	if seenPositionals < len(parser.positionals) {
-		return input, fmt.Errorf("missing positional %s", parser.positionals[seenPositionals].name)
+		entry := parser.positionals[seenPositionals]
+		if seenPositionals != len(parser.positionals)-1 || !isCLISlice(entry.fieldType) {
+			return input, fmt.Errorf("missing positional %s", entry.name)
+		}
+		field := fieldByPath(value, entry.path)
+		if field.IsNil() {
+			field.Set(reflect.MakeSlice(field.Type(), 0, 0))
+		}
 	}
 	for _, name := range parser.flagOrder {
 		if parser.flags[name].required && !seenFlags[name] {

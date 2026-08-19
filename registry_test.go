@@ -152,6 +152,9 @@ func TestRunProjectsFinalSliceAsVariadicPositional(t *testing.T) {
 	r := kit.NewRegistry()
 	err := kit.Register(r, kit.Tool{Name: "variadic"},
 		func(_ context.Context, input variadicInput) (greetOut, error) {
+			if input.Values == nil {
+				return greetOut{}, fmt.Errorf("values = nil, want an explicit slice")
+			}
 			return greetOut{Message: input.Prefix + ":" + strings.Join(input.Values, ",")}, nil
 		},
 		kit.Renderer[greetOut]{Text: func(output greetOut) (string, error) { return output.Message, nil }},
@@ -165,6 +168,13 @@ func TestRunProjectsFinalSliceAsVariadicPositional(t *testing.T) {
 	}
 	if got, want := stdout.String(), "items:one,two\n"; got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	stdout.Reset()
+	if err := kit.Run(context.Background(), r, []string{"variadic", "items"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "items:\n"; got != want {
+		t.Fatalf("empty variadic stdout = %q, want %q", got, want)
 	}
 }
 
