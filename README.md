@@ -13,9 +13,10 @@ requested. The core is MIT; licensing is a separate plug.
 Repeated flags populate scalar-slice inputs, and a final positional slice is
 variadic. Flags for pointer scalars preserve the difference between absent and
 explicitly empty values. Byte slices and nested container shapes are rejected
-because they do not have an unambiguous CLI projection. A renderer can also
-provide an exact MCP text block while the typed output remains available as
-structured content.
+because they do not have an unambiguous CLI projection. Non-`omitempty` schema
+fields become required CLI flags, and `--json` is reserved for output. A
+renderer can also provide an exact MCP text block while the typed output
+remains available as structured content.
 
 The first slice provides `Register`, `Run`, and `NewServer`. The stateless HTTP
 spike confirms that go-sdk v1.7.0 does not emit the removed `ping` method when

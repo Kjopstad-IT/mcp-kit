@@ -57,11 +57,13 @@ type cliField struct {
 	path      []int
 	name      string
 	fieldType reflect.Type
+	required  bool
 }
 
 type cliParser[In any] struct {
 	positionals []cliField
 	flags       map[string]cliField
+	flagOrder   []string
 }
 
 func buildCLIParser[In any]() (*cliParser[In], error) {
@@ -83,7 +85,8 @@ func (parser *cliParser[In]) addFields(inputType reflect.Type, parentPath []int)
 			continue
 		}
 		path := append(append([]int(nil), parentPath...), i)
-		jsonName := strings.Split(field.Tag.Get("json"), ",")[0]
+		jsonParts := strings.Split(field.Tag.Get("json"), ",")
+		jsonName := jsonParts[0]
 		if jsonName == "-" || field.Tag.Get("cli") == "-" {
 			continue
 		}
@@ -103,7 +106,13 @@ func (parser *cliParser[In]) addFields(inputType reflect.Type, parentPath []int)
 		if !supportedCLIType(field.Type) {
 			return fmt.Errorf("unsupported CLI field %s of type %s", jsonName, field.Type)
 		}
-		entry := cliField{path: path, name: jsonName, fieldType: field.Type}
+		required := true
+		for _, option := range jsonParts[1:] {
+			if option == "omitempty" || option == "omitzero" {
+				required = false
+			}
+		}
+		entry := cliField{path: path, name: jsonName, fieldType: field.Type, required: required}
 		if field.Tag.Get("cli") == "positional" {
 			if len(parser.positionals) > 0 && isCLISlice(parser.positionals[len(parser.positionals)-1].fieldType) {
 				return fmt.Errorf("positional slice %s must be last", parser.positionals[len(parser.positionals)-1].name)
@@ -115,11 +124,15 @@ func (parser *cliParser[In]) addFields(inputType reflect.Type, parentPath []int)
 		if name == "" {
 			name = strings.ReplaceAll(jsonName, "_", "-")
 		}
+		if name == "json" {
+			return fmt.Errorf("CLI flag --json is reserved for output selection")
+		}
 		if _, exists := parser.flags[name]; exists {
 			return fmt.Errorf("duplicate CLI flag --%s", name)
 		}
 		entry.name = name
 		parser.flags[name] = entry
+		parser.flagOrder = append(parser.flagOrder, name)
 	}
 	return nil
 }
@@ -168,6 +181,7 @@ func (parser *cliParser[In]) parse(args []string) (In, error) {
 	value := reflect.ValueOf(&input).Elem()
 
 	seenPositionals := 0
+	seenFlags := make(map[string]bool)
 	parseOptions := true
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -196,6 +210,7 @@ func (parser *cliParser[In]) parse(args []string) (In, error) {
 			if err := setField(field, raw); err != nil {
 				return input, fmt.Errorf("flag --%s: %w", name, err)
 			}
+			seenFlags[name] = true
 			continue
 		}
 
@@ -217,6 +232,11 @@ func (parser *cliParser[In]) parse(args []string) (In, error) {
 	}
 	if seenPositionals < len(parser.positionals) {
 		return input, fmt.Errorf("missing positional %s", parser.positionals[seenPositionals].name)
+	}
+	for _, name := range parser.flagOrder {
+		if parser.flags[name].required && !seenFlags[name] {
+			return input, fmt.Errorf("missing required flag --%s", name)
+		}
 	}
 	return input, nil
 }

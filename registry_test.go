@@ -71,6 +71,47 @@ type duplicateFlagsIn struct {
 	Second string `cli:"target"`
 }
 
+type reservedFlagInput struct {
+	Format string `json:"format" cli:"json"`
+}
+
+func TestRegisterRejectsReservedJSONFlag(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "reserved"},
+		func(context.Context, reservedFlagInput) (greetOut, error) { return greetOut{}, nil },
+		kit.Renderer[greetOut]{Text: func(greetOut) (string, error) { return "", nil }},
+	)
+	if err == nil || !strings.Contains(err.Error(), "--json is reserved") {
+		t.Fatalf("Register error = %v, want reserved flag rejection", err)
+	}
+}
+
+type requiredFlagsInput struct {
+	Name     string `json:"name"`
+	Optional string `json:"optional,omitempty"`
+}
+
+func TestRunRequiresNonOmittedSchemaFlags(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "required"},
+		func(_ context.Context, input requiredFlagsInput) (greetOut, error) {
+			return greetOut{Message: input.Name}, nil
+		},
+		kit.Renderer[greetOut]{Text: func(output greetOut) (string, error) { return output.Message, nil }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr testWriter
+	err = kit.Run(context.Background(), r, []string{"required", "--optional", "ok"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "missing required flag --name") {
+		t.Fatalf("Run error = %v, want required flag rejection", err)
+	}
+	if err := kit.Run(context.Background(), r, []string{"required", "--name", ""}, &stdout, &stderr); err != nil {
+		t.Fatalf("explicit empty required flag: %v", err)
+	}
+}
+
 type collectionInput struct {
 	Labels []string `json:"labels,omitempty"`
 	Body   *string  `json:"body,omitempty"`
