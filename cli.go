@@ -41,7 +41,9 @@ func Run(ctx context.Context, registry *Registry, args []string, stdout, _ io.Wr
 		return err
 	}
 	if jsonOutput {
-		return json.NewEncoder(stdout).Encode(output)
+		encoder := json.NewEncoder(stdout)
+		encoder.SetEscapeHTML(false)
+		return encoder.Encode(output)
 	}
 	text, err := tool.renderText(output)
 	if err != nil {
