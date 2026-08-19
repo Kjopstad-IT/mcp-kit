@@ -32,6 +32,27 @@ func TestRunRendersJSON(t *testing.T) {
 	}
 }
 
+func TestRunJSONDoesNotEscapeHTMLCharacters(t *testing.T) {
+	type output struct {
+		Text string `json:"text"`
+	}
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "show"},
+		func(context.Context, struct{}) (output, error) { return output{Text: "<a&b>"}, nil },
+		kit.Renderer[output]{Text: func(out output) (string, error) { return out.Text, nil }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr testWriter
+	if err := kit.Run(context.Background(), r, []string{"show", "--json"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "{\"text\":\"<a&b>\"}\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+}
+
 func TestRunRequiresPositionalInput(t *testing.T) {
 	r := newRegistry(t)
 	var stdout, stderr testWriter
