@@ -32,6 +32,29 @@ func TestRunRendersJSON(t *testing.T) {
 	}
 }
 
+func TestRunProjectsProgressToStderr(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "work"},
+		func(ctx context.Context, _ struct{}) (greetOut, error) {
+			if err := kit.ReportProgress(ctx, kit.Progress{Message: "indexing", Current: 2, Total: 5}); err != nil {
+				return greetOut{}, err
+			}
+			return greetOut{Message: "done"}, nil
+		},
+		kit.Renderer[greetOut]{Text: func(out greetOut) (string, error) { return out.Message, nil }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr testWriter
+	if err := kit.Run(context.Background(), r, []string{"work"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stderr.String(), "indexing 2/5\n"; got != want {
+		t.Fatalf("stderr = %q, want %q", got, want)
+	}
+}
+
 func TestRunJSONDoesNotEscapeHTMLCharacters(t *testing.T) {
 	type output struct {
 		Text string `json:"text"`

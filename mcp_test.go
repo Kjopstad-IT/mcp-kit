@@ -109,6 +109,206 @@ func TestServerUsesExactMCPTextAndKeepsStructuredContent(t *testing.T) {
 	}
 }
 
+func TestServerProjectsNonTextContentAndKeepsStructuredContent(t *testing.T) {
+	type imageOutput struct {
+		Data string `json:"data"`
+	}
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "capture"},
+		func(context.Context, struct{}) (imageOutput, error) {
+			return imageOutput{Data: "PNG"}, nil
+		},
+		kit.Renderer[imageOutput]{
+			Text: func(imageOutput) (string, error) { return "captured image/png", nil },
+			MCPContent: func(out imageOutput) ([]mcp.Content, error) {
+				return []mcp.Content{&mcp.ImageContent{Data: []byte(out.Data), MIMEType: "image/png"}}, nil
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	server, err := kit.NewServer(r, &mcp.Implementation{Name: "test", Version: "0.1.0"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	result, err := clientSession.CallTool(ctx, &mcp.CallToolParams{Name: "capture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Content) != 1 {
+		t.Fatalf("content = %#v, want one image", result.Content)
+	}
+	image, ok := result.Content[0].(*mcp.ImageContent)
+	if !ok || string(image.Data) != "PNG" || image.MIMEType != "image/png" {
+		t.Fatalf("content = %#v, want image/png PNG", result.Content)
+	}
+	structured, ok := result.StructuredContent.(map[string]any)
+	if !ok || structured["data"] != "PNG" {
+		t.Fatalf("structured content = %#v", result.StructuredContent)
+	}
+}
+
+func TestServerProjectsProgressWithRequestToken(t *testing.T) {
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "work"},
+		func(ctx context.Context, _ struct{}) (greetOut, error) {
+			if err := kit.ReportProgress(ctx, kit.Progress{Message: "indexing", Current: 2, Total: 5}); err != nil {
+				return greetOut{}, err
+			}
+			return greetOut{Message: "done"}, nil
+		},
+		kit.Renderer[greetOut]{Text: func(out greetOut) (string, error) { return out.Message, nil }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	server, err := kit.NewServer(r, &mcp.Implementation{Name: "test", Version: "0.1.0"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	updates := make(chan *mcp.ProgressNotificationParams, 1)
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, &mcp.ClientOptions{
+		ProgressNotificationHandler: func(_ context.Context, req *mcp.ProgressNotificationClientRequest) {
+			updates <- req.Params
+		},
+	})
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	params := &mcp.CallToolParams{Name: "work"}
+	params.SetProgressToken("job-7")
+	if _, err := clientSession.CallTool(ctx, params); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case update := <-updates:
+		if update.ProgressToken != "job-7" || update.Message != "indexing" || update.Progress != 2 || update.Total != 5 {
+			t.Fatalf("progress = %+v", update)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("progress notification was not delivered")
+	}
+}
+
+func TestServerProjectsEffectsAnnotations(t *testing.T) {
+	readOnly := true
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{
+		Name: "inspect",
+		Annotations: &mcp.ToolAnnotations{
+			ReadOnlyHint:   true,
+			IdempotentHint: true,
+			OpenWorldHint:  &readOnly,
+		},
+	}, func(context.Context, struct{}) (greetOut, error) {
+		return greetOut{Message: "ok"}, nil
+	}, kit.Renderer[greetOut]{Text: func(out greetOut) (string, error) { return out.Message, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	server, err := kit.NewServer(r, &mcp.Implementation{Name: "test", Version: "0.1.0"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	listed, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	annotations := listed.Tools[0].Annotations
+	if annotations == nil || !annotations.ReadOnlyHint || !annotations.IdempotentHint || annotations.OpenWorldHint == nil || !*annotations.OpenWorldHint {
+		t.Fatalf("annotations = %+v", annotations)
+	}
+}
+
+func TestMCPHeaderAnnotationDoesNotChangeCLIProjection(t *testing.T) {
+	type headerInput struct {
+		Region string `json:"region,omitempty" mcpheader:"Region"`
+		Query  string `json:"query" cli:"positional"`
+	}
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "search"},
+		func(_ context.Context, in headerInput) (greetOut, error) {
+			return greetOut{Message: in.Region + ":" + in.Query}, nil
+		},
+		kit.Renderer[greetOut]{Text: func(out greetOut) (string, error) { return out.Message, nil }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr testWriter
+	if err := kit.Run(context.Background(), r, []string{"search", "needle", "--region", "eu"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "eu:needle\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+
+	ctx := context.Background()
+	server, err := kit.NewServer(r, &mcp.Implementation{Name: "test", Version: "0.1.0"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	listed, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemaJSON, err := json.Marshal(listed.Tools[0].InputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(schemaJSON), `"x-mcp-header":"Region"`) {
+		t.Fatalf("input schema = %s, want x-mcp-header", schemaJSON)
+	}
+}
+
 func TestServerRequiresImplementationIdentity(t *testing.T) {
 	_, err := kit.NewServer(newRegistry(t), nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "implementation") {

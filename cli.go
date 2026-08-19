@@ -12,7 +12,7 @@ import (
 
 // Run invokes the CLI projection. Args begin with the tool name; the product
 // owns the parent "run" command and passes its remaining arguments here.
-func Run(ctx context.Context, registry *Registry, args []string, stdout, _ io.Writer) error {
+func Run(ctx context.Context, registry *Registry, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return fmt.Errorf("mcp-kit: tool name is required")
 	}
@@ -36,6 +36,21 @@ func Run(ctx context.Context, registry *Registry, args []string, stdout, _ io.Wr
 		}
 		toolArgs = append(toolArgs, arg)
 	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	ctx = withProgressReporter(ctx, func(_ context.Context, progress Progress) error {
+		label := progress.Message
+		if label == "" {
+			label = "progress"
+		}
+		if progress.Total > 0 {
+			_, err := fmt.Fprintf(stderr, "%s %g/%g\n", label, progress.Current, progress.Total)
+			return err
+		}
+		_, err := fmt.Fprintf(stderr, "%s %g\n", label, progress.Current)
+		return err
+	})
 	output, err := tool.invoke(ctx, toolArgs)
 	if err != nil {
 		return err
