@@ -618,3 +618,64 @@ func TestServerRejectsPingKeepAliveOn20260728(t *testing.T) {
 		t.Fatalf("NewServer error = %v, want KeepAlive rejection", err)
 	}
 }
+
+type unexportedCommon struct {
+	Tenant string `json:"tenant" mcpheader:"X-Tenant"`
+}
+
+// guards: S: a required field promoted from an unexported embed is unknown to the CLI and loses x-mcp-header, so one handler gets different inputs per surface.
+func TestUnexportedEmbedPromotesFieldsOnCLIAndSchema(t *testing.T) {
+	type input struct {
+		unexportedCommon
+		Name string `json:"name" cli:"positional"`
+	}
+	r := kit.NewRegistry()
+	err := kit.Register(r, kit.Tool{Name: "e"},
+		func(_ context.Context, in input) (greetOut, error) {
+			return greetOut{Message: in.Name + "/" + in.Tenant}, nil
+		},
+		kit.Renderer[greetOut]{Text: func(out greetOut) (string, error) { return out.Message, nil }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr testWriter
+	if err := kit.Run(context.Background(), r, []string{"e", "Ada", "--tenant", "acme"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "Ada/acme\n"; got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if err := kit.Run(context.Background(), r, []string{"e", "Ada"}, &stdout, &stderr); err == nil {
+		t.Fatal("Run without required promoted --tenant succeeded")
+	}
+
+	ctx := context.Background()
+	server, err := kit.NewServer(r, &mcp.Implementation{Name: "test", Version: "0.1.0"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientTransport, serverTransport := mcp.NewInMemoryTransports()
+	serverSession, err := server.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverSession.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0.1.0"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientSession.Close()
+	listed, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schemaJSON, err := json.Marshal(listed.Tools[0].InputSchema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(schemaJSON), `"x-mcp-header":"X-Tenant"`) {
+		t.Fatalf("input schema = %s, want x-mcp-header on promoted tenant", schemaJSON)
+	}
+}
