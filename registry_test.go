@@ -567,3 +567,22 @@ func TestRegisterRejectsShadowedEmbeddedMCPHeader(t *testing.T) {
 		t.Fatalf("Register error = %v, want shadowed header rejection", err)
 	}
 }
+
+type unexportedPtrCommon struct {
+	Tenant string `json:"tenant"`
+}
+
+// guards: S: a dual-surface tool embedding an unexported struct pointer registers silently while the CLI cannot set its promoted fields.
+func TestRegisterRejectsUnexportedEmbeddedStructPointer(t *testing.T) {
+	type input struct {
+		*unexportedPtrCommon
+		Name string `json:"name" cli:"positional"`
+	}
+	err := kit.Register(kit.NewRegistry(), kit.Tool{Name: "e"},
+		func(_ context.Context, _ input) (greetOut, error) { return greetOut{}, nil },
+		kit.Renderer[greetOut]{Text: func(out greetOut) (string, error) { return out.Message, nil }},
+	)
+	if err == nil || !strings.Contains(err.Error(), "unexported") {
+		t.Fatalf("Register error = %v, want unexported embedded pointer rejection", err)
+	}
+}
