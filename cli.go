@@ -96,7 +96,7 @@ func buildCLIParser[In any]() (*cliParser[In], error) {
 func (parser *cliParser[In]) addFields(inputType reflect.Type, parentPath []int) error {
 	for i := 0; i < inputType.NumField(); i++ {
 		field := inputType.Field(i)
-		if !field.IsExported() {
+		if !field.Anonymous && !field.IsExported() {
 			continue
 		}
 		path := append(append([]int(nil), parentPath...), i)
@@ -108,6 +108,16 @@ func (parser *cliParser[In]) addFields(inputType reflect.Type, parentPath []int)
 		embeddedType := field.Type
 		if embeddedType.Kind() == reflect.Pointer {
 			embeddedType = embeddedType.Elem()
+		}
+		if field.Anonymous && !field.IsExported() {
+			// encoding/json promotes the exported fields of an unexported
+			// embedded struct and ignores other unexported embeds.
+			if embeddedType.Kind() != reflect.Struct {
+				continue
+			}
+			if field.Type.Kind() == reflect.Pointer {
+				return fmt.Errorf("CLI cannot set embedded pointer to unexported struct %s", field.Type)
+			}
 		}
 		if field.Anonymous && jsonName == "" && embeddedType.Kind() == reflect.Struct {
 			if err := parser.addFields(embeddedType, path); err != nil {

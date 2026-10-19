@@ -187,7 +187,7 @@ func collectSchemaFields(inputType reflect.Type, depth int, parent string) []sch
 	var fields []schemaField
 	for i := 0; i < inputType.NumField(); i++ {
 		field := inputType.Field(i)
-		if !field.IsExported() {
+		if !field.Anonymous && !field.IsExported() {
 			continue
 		}
 		jsonParts := strings.Split(field.Tag.Get("json"), ",")
@@ -198,6 +198,9 @@ func collectSchemaFields(inputType reflect.Type, depth int, parent string) []sch
 		embeddedType := field.Type
 		if embeddedType.Kind() == reflect.Pointer {
 			embeddedType = embeddedType.Elem()
+		}
+		if field.Anonymous && !field.IsExported() && embeddedType.Kind() != reflect.Struct {
+			continue
 		}
 		path := field.Name
 		if parent != "" {
